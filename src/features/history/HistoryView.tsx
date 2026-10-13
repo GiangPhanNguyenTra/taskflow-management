@@ -2,16 +2,32 @@ import { CheckCircle2, Clock3, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import type { Task } from "../../shared/task";
+import { TaskDetailDialog } from "../tasks/TaskDetailDialog";
 import { listHistoryTasks } from "../tasks/taskRepository";
 
-export function HistoryView() {
+export function HistoryView({ onChanged }: { onChanged: () => Promise<void> }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      setTasks(await listHistoryTasks());
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    listHistoryTasks()
-      .then(setTasks)
-      .finally(() => setLoading(false));
+    void load();
   }, []);
+
+  const refreshAfterChange = async () => {
+    await load();
+    await onChanged();
+  };
+
   return (
     <section>
       <div className="mb-6">
@@ -32,11 +48,17 @@ export function HistoryView() {
           {tasks.map((task) => (
             <article
               key={task.id}
-              className="flex items-center gap-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm"
+              className="flex items-center gap-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm transition hover:border-violet-200"
             >
               <CheckCircle2 className="text-emerald-500" />
               <div className="min-w-0 flex-1">
-                <h2 className="font-bold">{task.title}</h2>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTask(task)}
+                  className="truncate text-left font-bold hover:text-violet-700 hover:underline"
+                >
+                  {task.title}
+                </button>
                 <p className="mt-1 text-sm text-slate-500">
                   {task.completedAt
                     ? `Completed ${new Date(task.completedAt).toLocaleString()}`
@@ -44,7 +66,6 @@ export function HistoryView() {
                 </p>
               </div>
               <Badge className="bg-emerald-100 text-emerald-700">Done</Badge>
-              <Clock3 size={16} className="text-slate-300" />
             </article>
           ))}
         </div>
@@ -57,6 +78,13 @@ export function HistoryView() {
           </p>
         </div>
       )}
+      <TaskDetailDialog
+        task={selectedTask}
+        open={Boolean(selectedTask)}
+        onOpenChange={(open) => !open && setSelectedTask(null)}
+        onTaskUpdated={setSelectedTask}
+        onChanged={refreshAfterChange}
+      />
     </section>
   );
 }

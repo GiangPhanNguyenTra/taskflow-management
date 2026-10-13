@@ -27,7 +27,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -98,10 +98,30 @@ function SortableTask({
 }) {
   const sortable = useSortable({ id: task.id });
   const [menuOpen, setMenuOpen] = useState(false);
+  const cardRef = useRef<HTMLElement | null>(null);
   const statusLabel = task.status === "pending" ? "Pending" : "To do";
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnOutsideInteraction = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent) {
+        if (event.key === "Escape") setMenuOpen(false);
+        return;
+      }
+      if (!cardRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideInteraction);
+    document.addEventListener("keydown", closeOnOutsideInteraction);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideInteraction);
+      document.removeEventListener("keydown", closeOnOutsideInteraction);
+    };
+  }, [menuOpen]);
   return (
     <article
-      ref={sortable.setNodeRef}
+      ref={(node) => {
+        sortable.setNodeRef(node);
+        cardRef.current = node;
+      }}
       style={{
         transform: CSS.Transform.toString(sortable.transform),
         transition: sortable.transition,
@@ -293,6 +313,11 @@ function App() {
   const [view, setView] = useState<"today" | "backlog" | "history">("today");
   const [drafts, setDrafts] = useState<DraftTask[]>([]);
   const [switching, setSwitching] = useState<Task | null>(null);
+  const [pendingSingleStart, setPendingSingleStart] = useState<{
+    title: string;
+    description: string;
+    priority: TaskPriority;
+  } | null>(null);
   const [note, setNote] = useState("");
   const [pendingReorder, setPendingReorder] = useState<Task[] | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -338,6 +363,17 @@ function App() {
     event.preventDefault();
     if (!singleTitle.trim()) return;
     try {
+      if (singleAction === "now" && active) {
+        const draft = {
+          title: singleTitle.trim(),
+          description: singleDescription.trim(),
+          priority: singlePriority,
+        };
+        setPendingSingleStart(draft);
+        setSwitching({ title: draft.title } as Task);
+        setAddOpen(false);
+        return;
+      }
       const task = await createTask({
         title: singleTitle.trim(),
         description: singleDescription.trim() || undefined,
@@ -454,15 +490,36 @@ function App() {
     }
   };
   const switchTaskNow = async () => {
-    if (!switching) return;
+    if (!switching && !pendingSingleStart) return;
     try {
-      await switchTask(switching.id, note);
+      if (pendingSingleStart) {
+        const task = await createTask({
+          ...pendingSingleStart,
+          description: pendingSingleStart.description || undefined,
+          location: "today",
+          plannedDate: today(),
+          queuePosition: queue.length,
+        });
+        await switchTask(task.id, note);
+        setSingleTitle("");
+        setSingleDescription("");
+      } else if (switching) {
+        await switchTask(switching.id, note);
+      }
       setNote("");
       setSwitching(null);
+      setPendingSingleStart(null);
       await refresh();
     } catch (reason) {
       setError(String(reason));
     }
+  };
+  const returnToSingleTaskForm = () => {
+    setNote("");
+    setSwitching(null);
+    setPendingSingleStart(null);
+    setSingleAction("queue");
+    setAddOpen(true);
   };
   const applyQueueOrder = async (updated: Task[]) => {
     const positioned = updated.map((task, index) => ({
@@ -699,7 +756,7 @@ function App() {
             onChanged={refresh}
           />
         )}
-        {view === "history" && <HistoryView />}
+        {view === "history" && <HistoryView onChanged={refresh} />}
       </div>
       <DailyCarryoverDialog
         date={today()}
@@ -941,8 +998,14 @@ function App() {
         </DialogContent>
       </Dialog>
       <Dialog
-        open={Boolean(switching)}
-        onOpenChange={(open) => !open && setSwitching(null)}
+        open={Boolean(switching || pendingSingleStart)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSwitching(null);
+            setPendingSingleStart(null);
+            setNote("");
+          }
+        }}
       >
         <DialogContent>
           <DialogTitle className="text-xl font-bold">
@@ -962,6 +1025,16 @@ function App() {
             Save context & switch
             <ChevronRight size={17} />
           </Button>
+          {pendingSingleStart && (
+            <Button
+              variant="ghost"
+              className="mt-2 w-full text-slate-500 hover:text-violet-700"
+              onClick={returnToSingleTaskForm}
+            >
+              <ChevronLeft size={17} />
+              Back to task details
+            </Button>
+          )}
         </DialogContent>
       </Dialog>
       <TaskDetailDialog
