@@ -14,5 +14,11 @@ pub fn core_schema() -> Vec<Migration> {
             sql: include_str!("../migrations/0002_reminders.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "index completed task history",
+            sql: include_str!("../migrations/0003_history_index.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

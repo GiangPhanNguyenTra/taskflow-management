@@ -2,10 +2,40 @@
 
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  --color-primary: #d86d9b;
+  --color-primary-hover: #c65b89;
+  --color-accent: #f6dce8;
+  --color-accent-soft: #fff1f6;
+  --color-background: #fff8fb;
+  --color-surface: #ffffff;
+  --color-border: #f1dce6;
+  --color-border-accent: #e9aec7;
+  --color-focus-ring: #e58bad;
+  --color-gradient-start: #6f2549;
+  --color-gradient-middle: #b8517e;
+  --color-gradient-end: #ec9fbd;
   color: #172033;
-  background: #f7f8fc;
+  background: var(--color-background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+:root[data-theme="original-purple"] {
+  --color-primary: #7c3aed; --color-primary-hover: #6d28d9; --color-accent: #ddd6fe; --color-accent-soft: #f5f3ff;
+  --color-background: #f7f7fb; --color-surface: #ffffff; --color-border: #e9e7f1; --color-border-accent: #c4b5fd; --color-focus-ring: #a78bfa;
+  --color-gradient-start: #241251; --color-gradient-middle: #48208a; --color-gradient-end: #8724bb;
+}
+
+:root[data-theme="sky-blue"] {
+  --color-primary: #4d98cb; --color-primary-hover: #377fad; --color-accent: #d6ebf8; --color-accent-soft: #eef8ff;
+  --color-background: #f5faff; --color-surface: #ffffff; --color-border: #d8eaf6; --color-border-accent: #9dcae7; --color-focus-ring: #73b4dd;
+  --color-gradient-start: #164b72; --color-gradient-middle: #347eb0; --color-gradient-end: #83c5e6;
+}
+
+:root[data-theme="sage-green"] {
+  --color-primary: #72a998; --color-primary-hover: #5c9483; --color-accent: #dcece5; --color-accent-soft: #f0f8f4;
+  --color-background: #f7fbf8; --color-surface: #ffffff; --color-border: #dcebe4; --color-border-accent: #a8cebd; --color-focus-ring: #8bbba9;
+  --color-gradient-start: #28584d; --color-gradient-middle: #548d7d; --color-gradient-end: #a2ccbb;
 }
 html {
   scrollbar-gutter: stable;
@@ -40,14 +70,40 @@ button {
   min-height: 42px;
   border: 3px solid transparent;
   border-radius: 999px;
-  background: linear-gradient(180deg, #c4b5fd 0%, #a78bfa 100%);
+  background: linear-gradient(180deg, var(--color-accent) 0%, var(--color-focus-ring) 100%);
   background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, #a78bfa 0%, #7c3aed 100%);
+  background: linear-gradient(180deg, var(--color-focus-ring) 0%, var(--color-primary) 100%);
   background-clip: padding-box;
 }
+
+.theme-preview { background: var(--preview-background); }
+.theme-preview-primary { background: var(--preview-primary); }
+.theme-preview-soft { background: var(--preview-soft); }
+[data-preview-theme="pink-pastel"] { --preview-background: #fff0f6; --preview-primary: #d86d9b; --preview-soft: #f9dce9; }
+[data-preview-theme="original-purple"] { --preview-background: #f1eaff; --preview-primary: #7c3aed; --preview-soft: #e6ddff; }
+[data-preview-theme="sky-blue"] { --preview-background: #e9f5ff; --preview-primary: #4d98cb; --preview-soft: #d7ebfa; }
+[data-preview-theme="sage-green"] { --preview-background: #edf6f1; --preview-primary: #72a998; --preview-soft: #dcece5; }
+
+/* Compatibility layer for existing Tailwind utility usage. Brand colors always resolve through theme tokens. */
+.bg-violet-600, .bg-violet-500 { background-color: var(--color-primary) !important; }
+.hover\:bg-violet-700:hover { background-color: var(--color-primary-hover) !important; }
+.text-violet-500, .text-violet-600, .text-violet-700 { color: var(--color-primary) !important; }
+.text-violet-100, .text-violet-200, .text-fuchsia-200 { color: var(--color-accent) !important; }
+.hover\:text-violet-700:hover, .hover\:text-violet-900:hover { color: var(--color-primary-hover) !important; }
+.bg-violet-50, .bg-violet-50\/40, .bg-violet-50\/60, .bg-violet-100 { background-color: var(--color-accent-soft) !important; }
+.border-violet-100, .border-violet-200, .border-violet-300, .border-violet-500 { border-color: var(--color-border-accent) !important; }
+.hover\:border-violet-200:hover { border-color: var(--color-border-accent) !important; }
+.ring-violet-100, .ring-violet-400 { --tw-ring-color: var(--color-focus-ring) !important; }
+.focus\:ring-violet-300:focus { --tw-ring-color: var(--color-focus-ring) !important; }
+.focus\:border-violet-400:focus { border-color: var(--color-focus-ring) !important; }
+.accent-violet-600 { accent-color: var(--color-primary) !important; }
+.from-violet-600 { --tw-gradient-from: var(--color-primary) var(--tw-gradient-from-position) !important; }
+.to-fuchsia-500 { --tw-gradient-to: var(--color-accent) var(--tw-gradient-to-position) !important; }
+.bg-white { background-color: var(--color-surface); }
+.border-slate-100, .border-slate-200 { border-color: var(--color-border); }
 
 *::-webkit-scrollbar-corner {
   background: transparent;

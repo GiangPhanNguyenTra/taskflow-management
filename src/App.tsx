@@ -24,7 +24,6 @@ import {
   LoaderCircle,
   Play,
   Plus,
-  Sparkles,
   Trash2,
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -43,6 +42,8 @@ import { HistoryView } from "./features/history/HistoryView";
 import { isReminderSnoozed, updatePinnedReminder } from "./features/reminders/reminderRepository";
 import { SettingsView } from "./features/settings/SettingsView";
 import { getAppSettings, type AppSettings } from "./features/settings/settingsRepository";
+import { applyTheme } from "./features/settings/theme";
+import appLogo from "./assets/logo.png";
 import {
   completeTask,
   createTask,
@@ -331,6 +332,7 @@ function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [deletingTask, setDeletingTask] = useState<Task | null>(null);
   const lastPendingReminderAt = useRef(0);
+  const pendingReminderTaskId = useRef<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
@@ -358,7 +360,7 @@ function App() {
     void refresh();
   }, []);
   useEffect(() => {
-    void getAppSettings().then(setAppSettings).catch((reason) => setError(String(reason)));
+    void getAppSettings().then((settings) => { applyTheme(settings.theme); setAppSettings(settings); }).catch((reason) => setError(String(reason)));
   }, []);
   useEffect(() => {
     if (!appSettings?.quickAddShortcut) return;
@@ -397,7 +399,15 @@ function App() {
     };
     void syncPinnedReminder();
 
-    if (!appSettings.remindersEnabled || !pending) return;
+    if (!appSettings.remindersEnabled || !pending) {
+      pendingReminderTaskId.current = null;
+      lastPendingReminderAt.current = 0;
+      return;
+    }
+    if (pendingReminderTaskId.current !== pending.id) {
+      pendingReminderTaskId.current = pending.id;
+      lastPendingReminderAt.current = Date.now();
+    }
     const sendBackgroundNotification = async () => {
       if (!(await syncPinnedReminder())) return;
       const intervalMs = appSettings.reminderIntervalMinutes * 60_000;
@@ -624,12 +634,12 @@ function App() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f7f7fb] p-5 text-slate-900 sm:p-8">
+    <main className="min-h-screen bg-[var(--color-background)] p-5 text-slate-900 sm:p-8">
       <div className="mx-auto max-w-6xl">
         <header className="mb-8 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-500 text-white shadow-lg shadow-violet-500/25">
-              <Sparkles size={21} />
+            <div className="grid h-11 w-11 place-items-center overflow-hidden rounded-2xl bg-[var(--color-surface)] shadow-lg ring-1 ring-[var(--color-border)]">
+              <img src={appLogo} alt="TaskFlow" className="h-full w-full object-cover" />
             </div>
             <div>
               <p className="text-lg font-bold">TaskFlow</p>
@@ -647,7 +657,7 @@ function App() {
           {[
             ["today", "Today"],
             ["backlog", "Backlog"],
-            ["history", "History"],
+            ["history", "Analytics"],
             ["settings", "Settings"],
           ].map(([id, label]) => (
             <button
@@ -672,8 +682,8 @@ function App() {
                 {error}
               </div>
             )}
-            <section className="relative overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#241251] via-[#48208a] to-[#8724bb] p-7 text-white shadow-xl shadow-violet-900/15">
-              <div className="absolute -right-12 -top-20 h-64 w-64 rounded-full bg-fuchsia-400/25 blur-3xl" />
+            <section className="relative overflow-hidden rounded-[2rem] bg-[linear-gradient(135deg,var(--color-gradient-start),var(--color-gradient-middle),var(--color-gradient-end))] p-7 text-white shadow-xl">
+              <div className="absolute -right-12 -top-20 h-64 w-64 rounded-full bg-[var(--color-accent)]/25 blur-3xl" />
               <div className="relative">
                 {active ? (
                   <>
@@ -827,7 +837,7 @@ function App() {
           />
         )}
         {view === "history" && <HistoryView onChanged={refresh} />}
-        {view === "settings" && <SettingsView onSaved={setAppSettings} />}
+        {view === "settings" && <SettingsView onSaved={(settings) => { applyTheme(settings.theme); setAppSettings(settings); }} />}
       </div>
       <DailyCarryoverDialog
         date={today()}

@@ -42,10 +42,29 @@ export const updateTask = (input: UpdateTaskInput) =>
   invoke<Task>("update_task", { input });
 export const deleteTask = (taskId: string) =>
   invoke<void>("delete_task", { taskId });
-export const markTaskObsolete = (taskId: string) =>
-  invoke<void>("mark_task_obsolete", { taskId });
 export const listBacklogTasks = () => invoke<Task[]>("list_backlog_tasks");
 export const listHistoryTasks = () => invoke<Task[]>("list_history_tasks");
+export type HistoryQuery = {
+  startAt: string;
+  endAt: string;
+  startDate: string;
+  endDate: string;
+  priority?: TaskPriority;
+  status?: "todo" | "in_progress" | "pending" | "done";
+  search?: string;
+  sort?: "completed_newest" | "completed_oldest" | "priority_highest" | "priority_lowest";
+  page: number;
+  pageSize: number;
+  timezoneOffsetMinutes: number;
+};
+export type HistorySummary = {
+  trend: { date: string; count: number }[];
+  priorityDistribution: { priority: TaskPriority; count: number }[];
+  statusDistribution: { status: "todo" | "in_progress" | "pending" | "done"; count: number }[];
+};
+export type HistoryPage = { tasks: Task[]; total: number; summary: HistorySummary };
+export const listHistoryPage = (query: HistoryQuery) =>
+  invoke<HistoryPage>("list_history_page", { query });
 export const listTaskActivity = (taskId: string) =>
   invoke<TaskActivity[]>("list_task_activity", { taskId });
 export const listCarryoverTasks = (date: string) =>

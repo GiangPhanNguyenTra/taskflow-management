@@ -74,6 +74,7 @@ pub fn run() {
             tasks::update_pinned_reminder,
             tasks::set_pinned_reminder_compact,
             tasks::set_pinned_reminder_switching,
+            tasks::set_pinned_reminder_content_height,
             tasks::is_reminder_snoozed,
             tasks::snooze_pinned_reminder,
             tasks::complete_reminder_active,
@@ -87,6 +88,7 @@ pub fn run() {
             tasks::mark_task_done,
             tasks::list_backlog_tasks,
             tasks::list_history_tasks,
+            tasks::list_history_page,
             tasks::list_task_activity,
             tasks::list_carryover_tasks,
             tasks::move_task_to_backlog,
@@ -94,8 +96,7 @@ pub fn run() {
             tasks::list_today_tasks,
             tasks::reorder_tasks,
             tasks::update_task,
-            tasks::delete_task,
-            tasks::mark_task_obsolete
+            tasks::delete_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

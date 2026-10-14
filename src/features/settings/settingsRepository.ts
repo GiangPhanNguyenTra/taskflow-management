@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ThemeId } from "./theme";
 
 export type AppSettings = {
   remindersEnabled: boolean;
@@ -6,6 +7,7 @@ export type AppSettings = {
   retentionDays: number;
   quickAddShortcut: string;
   launchAtLogin: boolean;
+  theme: ThemeId;
 };
 
 export const getAppSettings = () => invoke<AppSettings>("get_app_settings");

@@ -32,14 +32,56 @@ pub struct TaskActivity {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryQuery {
+    pub start_at: String,
+    pub end_at: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub priority: Option<String>,
+    pub status: Option<String>,
+    pub search: Option<String>,
+    pub sort: Option<String>,
+    pub page: u32,
+    pub page_size: u32,
+    pub timezone_offset_minutes: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTrendPoint { pub date: String, pub count: u64 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPriorityPoint { pub priority: String, pub count: u64 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatusPoint { pub status: String, pub count: u64 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    pub trend: Vec<HistoryTrendPoint>,
+    pub priority_distribution: Vec<HistoryPriorityPoint>,
+    pub status_distribution: Vec<HistoryStatusPoint>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage { pub tasks: Vec<Task>, pub total: u64, pub summary: HistorySummary }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct AppSettings {
     pub reminders_enabled: bool,
     pub reminder_interval_minutes: u32,
     pub retention_days: u32,
     pub quick_add_shortcut: String,
     pub launch_at_login: bool,
+    pub theme: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -75,6 +117,7 @@ impl Default for AppSettings {
             retention_days: 90,
             quick_add_shortcut: "CommandOrControl+Shift+Space".into(),
             launch_at_login: false,
+            theme: "pink-pastel".into(),
         }
     }
 }
@@ -209,6 +252,9 @@ pub fn save_app_settings(app: AppHandle, mut settings: AppSettings) -> Result<Ap
     if settings.quick_add_shortcut.is_empty() {
         return Err("A Quick Add shortcut is required.".into());
     }
+    if !matches!(settings.theme.as_str(), "pink-pastel" | "original-purple" | "sky-blue" | "sage-green") {
+        settings.theme = "pink-pastel".into();
+    }
     let connection = database(&app)?;
     connection
         .execute(
@@ -217,6 +263,7 @@ pub fn save_app_settings(app: AppHandle, mut settings: AppSettings) -> Result<Ap
             params![serde_json::to_string(&settings).map_err(|error| error.to_string())?, now()],
         )
         .map_err(|error| error.to_string())?;
+    let _ = app.emit("theme-changed", settings.theme.clone());
     Ok(settings)
 }
 
@@ -297,6 +344,16 @@ pub fn set_pinned_reminder_switching(app: AppHandle, switching: bool) -> Result<
         let height = if switching { 340.0 } else { 260.0 };
         window
             .set_size(LogicalSize::new(520.0, height))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_pinned_reminder_content_height(app: AppHandle, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pinned-reminder") {
+        window
+            .set_size(LogicalSize::new(520.0, height.clamp(120.0, 440.0)))
             .map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -621,9 +678,79 @@ pub fn list_history_tasks(app: AppHandle) -> Result<Vec<Task>, String> {
     let connection = database(&app)?;
     task_list_without_params(
         &connection,
-        "SELECT * FROM tasks WHERE status IN ('done', 'obsolete') ORDER BY COALESCE(completed_at, obsolete_at, updated_at) DESC",
+        "SELECT * FROM tasks WHERE status = 'done' ORDER BY completed_at DESC, id DESC",
     )
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_history_page(app: AppHandle, query: HistoryQuery) -> Result<HistoryPage, String> {
+    if query.end_at <= query.start_at {
+        return Err("The end date must be after the start date.".into());
+    }
+    let priority = query.priority.filter(|value| matches!(value.as_str(), "urgent" | "high" | "medium" | "low"));
+    let status = query.status.filter(|value| matches!(value.as_str(), "todo" | "in_progress" | "pending" | "done"));
+    let search = query.search.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    let page_size = query.page_size.clamp(10, 50);
+    let page = query.page.max(1);
+    let offset = (page - 1).saturating_mul(page_size);
+    let closed_at = "COALESCE(completed_at, planned_date || 'T00:00:00.000Z', updated_at)";
+    let filters = format!(
+        "((status = 'done' AND completed_at >= ?1 AND completed_at < ?2)
+          OR (status != 'done' AND planned_date >= ?3 AND planned_date < ?4))
+         AND (?5 IS NULL OR priority = ?5) AND (?6 IS NULL OR status = ?6)
+         AND (?7 IS NULL OR lower(title) LIKE '%' || lower(?7) || '%' OR lower(COALESCE(description, '')) LIKE '%' || lower(?7) || '%')"
+    );
+    let order = match query.sort.as_deref() {
+        Some("completed_oldest") => format!("{closed_at} ASC, id ASC"),
+        Some("priority_highest") => format!("CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END ASC, {closed_at} DESC, id DESC"),
+        Some("priority_lowest") => format!("CASE priority WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 ELSE 4 END ASC, {closed_at} DESC, id DESC"),
+        _ => format!("{closed_at} DESC, id DESC"),
+    };
+    let connection = database(&app)?;
+    let common_params = params![query.start_at.as_str(), query.end_at.as_str(), query.start_date.as_str(), query.end_date.as_str(), priority.as_deref(), status.as_deref(), search.as_deref()];
+    let total: u64 = connection.query_row(
+        &format!("SELECT COUNT(*) FROM tasks WHERE {filters}"),
+        common_params,
+        |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT * FROM tasks WHERE {filters} ORDER BY {order} LIMIT ?8 OFFSET ?9"
+    )).map_err(|error| error.to_string())?;
+    let tasks = statement.query_map(
+        params![query.start_at.as_str(), query.end_at.as_str(), query.start_date.as_str(), query.end_date.as_str(), priority.as_deref(), status.as_deref(), search.as_deref(), page_size, offset],
+        task_from_row,
+    ).map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+
+    // Older records can contain RFC3339 timestamps SQLite's datetime parser does not
+    // normalize. Keep the local-time conversion when available, with a stable ISO-date
+    // fallback so one legacy row cannot prevent the whole analytics page from loading.
+    let local_date = "COALESCE(strftime('%Y-%m-%d', datetime(completed_at, printf('%+d minutes', ?8))), substr(completed_at, 1, 10), 'Unknown date')";
+    let mut trend_statement = connection.prepare(&format!(
+        "SELECT {local_date} AS date, COUNT(*) AS count FROM tasks WHERE {filters} GROUP BY date ORDER BY date ASC"
+    )).map_err(|error| error.to_string())?;
+    let trend = trend_statement.query_map(
+        params![query.start_at.as_str(), query.end_at.as_str(), query.start_date.as_str(), query.end_date.as_str(), priority.as_deref(), status.as_deref(), search.as_deref(), query.timezone_offset_minutes],
+        |row| Ok(HistoryTrendPoint { date: row.get(0)?, count: row.get(1)? }),
+    ).map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    let mut priority_statement = connection.prepare(&format!(
+        "SELECT priority, COUNT(*) FROM tasks WHERE {filters} GROUP BY priority"
+    )).map_err(|error| error.to_string())?;
+    let priority_distribution = priority_statement.query_map(
+        params![query.start_at.as_str(), query.end_at.as_str(), query.start_date.as_str(), query.end_date.as_str(), priority.as_deref(), status.as_deref(), search.as_deref()],
+        |row| Ok(HistoryPriorityPoint { priority: row.get(0)?, count: row.get(1)? }),
+    ).map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    let mut status_statement = connection.prepare(&format!(
+        "SELECT status, COUNT(*) FROM tasks WHERE {filters} GROUP BY status"
+    )).map_err(|error| error.to_string())?;
+    let status_distribution = status_statement.query_map(
+        params![query.start_at.as_str(), query.end_at.as_str(), query.start_date.as_str(), query.end_date.as_str(), priority.as_deref(), status.as_deref(), search.as_deref()],
+        |row| Ok(HistoryStatusPoint { status: row.get(0)?, count: row.get(1)? }),
+    ).map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    Ok(HistoryPage { tasks, total, summary: HistorySummary {
+        trend, priority_distribution, status_distribution,
+    }})
 }
 
 #[tauri::command]
@@ -831,29 +958,6 @@ pub fn delete_task(app: AppHandle, task_id: String) -> Result<(), String> {
     }
     tx.execute("DELETE FROM tasks WHERE id = ?1", [task_id])
         .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn mark_task_obsolete(app: AppHandle, task_id: String) -> Result<(), String> {
-    let timestamp = now();
-    let mut connection = database(&app)?;
-    let tx = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    let task = find_task(&tx, &task_id)
-        .map_err(|error| error.to_string())?
-        .ok_or("Task not found.")?;
-    if task.status == "in_progress" {
-        return Err("Complete or switch the active task before marking it obsolete.".into());
-    }
-    tx.execute(
-        "UPDATE tasks SET status = 'obsolete', obsolete_at = ?1, updated_at = ?1 WHERE id = ?2",
-        params![timestamp, task_id],
-    )
-    .map_err(|error| error.to_string())?;
-    add_event(&tx, &task_id, "obsolete", &timestamp, "{}").map_err(|error| error.to_string())?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
