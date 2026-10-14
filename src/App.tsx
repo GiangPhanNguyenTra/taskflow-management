@@ -40,6 +40,9 @@ import { TaskDetailDialog } from "./features/tasks/TaskDetailDialog";
 import { BacklogView } from "./features/backlog/BacklogView";
 import { DailyCarryoverDialog } from "./features/daily-carryover/DailyCarryoverDialog";
 import { HistoryView } from "./features/history/HistoryView";
+import { isReminderSnoozed, updatePinnedReminder } from "./features/reminders/reminderRepository";
+import { SettingsView } from "./features/settings/SettingsView";
+import { getAppSettings, type AppSettings } from "./features/settings/settingsRepository";
 import {
   completeTask,
   createTask,
@@ -53,6 +56,10 @@ import {
 } from "./features/tasks/taskRepository";
 import { cn } from "./lib/utils";
 import type { Task, TaskPriority } from "./shared/task";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
 type DraftTask = {
   id: string;
@@ -310,7 +317,8 @@ function App() {
   const [singlePriority, setSinglePriority] = useState<TaskPriority>("medium");
   const [singleAction, setSingleAction] = useState<"queue" | "now">("queue");
   const [multipleInput, setMultipleInput] = useState("");
-  const [view, setView] = useState<"today" | "backlog" | "history">("today");
+  const [view, setView] = useState<"today" | "backlog" | "history" | "settings">("today");
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [drafts, setDrafts] = useState<DraftTask[]>([]);
   const [switching, setSwitching] = useState<Task | null>(null);
   const [pendingSingleStart, setPendingSingleStart] = useState<{
@@ -322,6 +330,7 @@ function App() {
   const [pendingReorder, setPendingReorder] = useState<Task[] | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [deletingTask, setDeletingTask] = useState<Task | null>(null);
+  const lastPendingReminderAt = useRef(0);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
@@ -348,6 +357,66 @@ function App() {
   useEffect(() => {
     void refresh();
   }, []);
+  useEffect(() => {
+    void getAppSettings().then(setAppSettings).catch((reason) => setError(String(reason)));
+  }, []);
+  useEffect(() => {
+    if (!appSettings?.quickAddShortcut) return;
+    let activeShortcut = appSettings.quickAddShortcut;
+    void register(activeShortcut, (event) => {
+      if (event.state !== "Pressed") return;
+      void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
+      setAddOpen(true);
+    }).catch((reason) => setError(`Quick Add shortcut: ${String(reason)}`));
+    return () => { void unregister(activeShortcut).catch(() => undefined); };
+  }, [appSettings?.quickAddShortcut]);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("quick-add", () => setAddOpen(true)).then((stop) => { unlisten = stop; });
+    return () => unlisten?.();
+  }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("tasks-changed", () => void refresh()).then((stop) => { unlisten = stop; });
+    return () => unlisten?.();
+  }, []);
+  useEffect(() => {
+    if (!appSettings) return;
+    const pending = tasks.find((task) => task.status === "pending");
+    const summarize = (task: Task | undefined) => task
+      ? { id: task.id, title: task.title, detail: task.lastProgressNote || task.description }
+      : null;
+
+    const syncPinnedReminder = async () => {
+      const canRemind = Boolean(appSettings.remindersEnabled && pending)
+        && !(await isReminderSnoozed(pending!.id).catch(() => false));
+      await updatePinnedReminder(
+        canRemind ? { active: summarize(active), pending: summarize(pending) } : null,
+      ).catch(() => undefined);
+      return canRemind;
+    };
+    void syncPinnedReminder();
+
+    if (!appSettings.remindersEnabled || !pending) return;
+    const sendBackgroundNotification = async () => {
+      if (!(await syncPinnedReminder())) return;
+      const intervalMs = appSettings.reminderIntervalMinutes * 60_000;
+      if (Date.now() - lastPendingReminderAt.current < intervalMs) return;
+      try {
+        if (await getCurrentWindow().isVisible()) return;
+        let granted = await isPermissionGranted();
+        if (!granted) granted = (await requestPermission()) === "granted";
+        if (granted) {
+          sendNotification({ title: "TaskFlow reminder", body: `Resume \"${pending.title}\" when you are ready.` });
+          lastPendingReminderAt.current = Date.now();
+        }
+      } catch {
+        // Native notification APIs are unavailable in the browser preview.
+      }
+    };
+    const timer = window.setInterval(() => void sendBackgroundNotification(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [tasks, active, appSettings]);
   const closeModal = (open: boolean) => {
     setAddOpen(open);
     if (!open) setMultiStep("input");
@@ -579,11 +648,12 @@ function App() {
             ["today", "Today"],
             ["backlog", "Backlog"],
             ["history", "History"],
+            ["settings", "Settings"],
           ].map(([id, label]) => (
             <button
               key={id}
               type="button"
-              onClick={() => setView(id as "today" | "backlog" | "history")}
+              onClick={() => setView(id as "today" | "backlog" | "history" | "settings")}
               className={cn(
                 "rounded-lg px-4 py-2 text-sm font-semibold transition",
                 view === id
@@ -757,6 +827,7 @@ function App() {
           />
         )}
         {view === "history" && <HistoryView onChanged={refresh} />}
+        {view === "settings" && <SettingsView onSaved={setAppSettings} />}
       </div>
       <DailyCarryoverDialog
         date={today()}

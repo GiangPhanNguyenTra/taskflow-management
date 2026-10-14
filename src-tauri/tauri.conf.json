@@ -15,6 +15,23 @@
         "title": "taskflow-desktop",
         "width": 800,
         "height": 600
+      },
+      {
+        "label": "pinned-reminder",
+        "title": "TaskFlow reminder",
+        "url": "pinned.html",
+        "width": 520,
+        "height": 260,
+        "minWidth": 210,
+        "minHeight": 58,
+        "maxWidth": 540,
+        "maxHeight": 360,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false
       }
     ],
     "security": {

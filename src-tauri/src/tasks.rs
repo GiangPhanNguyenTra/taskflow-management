@@ -1,7 +1,8 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, State};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -29,6 +30,53 @@ pub struct TaskActivity {
     pub kind: String,
     pub occurred_at: String,
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub reminders_enabled: bool,
+    pub reminder_interval_minutes: u32,
+    pub retention_days: u32,
+    pub quick_add_shortcut: String,
+    pub launch_at_login: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedReminderTask {
+    pub id: String,
+    pub title: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedReminderPayload {
+    pub active: Option<PinnedReminderTask>,
+    pub pending: Option<PinnedReminderTask>,
+}
+
+#[derive(Default)]
+pub struct PinnedReminderState(pub Mutex<Option<PinnedReminderPayload>>);
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderSnooze {
+    task_id: String,
+    until: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            reminders_enabled: true,
+            reminder_interval_minutes: 30,
+            retention_days: 90,
+            quick_add_shortcut: "CommandOrControl+Shift+Space".into(),
+            launch_at_login: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +182,248 @@ fn add_event(
     let id = Uuid::new_v4().to_string();
     tx.execute("INSERT INTO task_events (id, task_id, event_type, occurred_at, payload_json) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, task_id, event_type, timestamp, payload])?;
     Ok(id)
+}
+
+#[tauri::command]
+pub fn get_app_settings(app: AppHandle) -> Result<AppSettings, String> {
+    let connection = database(&app)?;
+    let serialized: Option<String> = connection
+        .query_row(
+            "SELECT value_json FROM settings WHERE key = 'app_settings'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    serialized
+        .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
+        .transpose()
+        .map(|settings| settings.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn save_app_settings(app: AppHandle, mut settings: AppSettings) -> Result<AppSettings, String> {
+    settings.reminder_interval_minutes = settings.reminder_interval_minutes.clamp(5, 1_440);
+    settings.retention_days = settings.retention_days.clamp(1, 3_650);
+    settings.quick_add_shortcut = settings.quick_add_shortcut.trim().to_owned();
+    if settings.quick_add_shortcut.is_empty() {
+        return Err("A Quick Add shortcut is required.".into());
+    }
+    let connection = database(&app)?;
+    connection
+        .execute(
+            "INSERT INTO settings (key, value_json, updated_at) VALUES ('app_settings', ?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            params![serde_json::to_string(&settings).map_err(|error| error.to_string())?, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn run_retention_cleanup(app: AppHandle, retention_days: u32) -> Result<u64, String> {
+    let cutoff =
+        (Utc::now() - chrono::Duration::days(retention_days.clamp(1, 3_650) as i64)).to_rfc3339();
+    let connection = database(&app)?;
+    connection
+        .execute(
+            "DELETE FROM tasks WHERE status IN ('done', 'obsolete') AND COALESCE(completed_at, obsolete_at, updated_at) < ?1",
+            [cutoff],
+        )
+        .map(|count| count as u64)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_pinned_reminder(
+    state: State<'_, PinnedReminderState>,
+) -> Result<Option<PinnedReminderPayload>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|error| error.to_string())
+        .map(|value| value.clone())
+}
+
+#[tauri::command]
+pub fn update_pinned_reminder(
+    app: AppHandle,
+    state: State<'_, PinnedReminderState>,
+    payload: Option<PinnedReminderPayload>,
+) -> Result<(), String> {
+    *state.0.lock().map_err(|error| error.to_string())? = payload.clone();
+    if payload
+        .as_ref()
+        .and_then(|item| item.pending.as_ref())
+        .is_none()
+    {
+        if let Some(window) = app.get_webview_window("pinned-reminder") {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    if let Some(task) = payload.as_ref().and_then(|item| item.pending.as_ref()) {
+        if is_reminder_snoozed_for(&app, &task.id)? {
+            if let Some(window) = app.get_webview_window("pinned-reminder") {
+                window.hide().map_err(|error| error.to_string())?;
+            }
+            return Ok(());
+        }
+    }
+    let window = app
+        .get_webview_window("pinned-reminder")
+        .ok_or("Pinned reminder window is not configured.")?;
+    window.show().map_err(|error| error.to_string())?;
+    let _ = window.emit("pinned-reminder:update", payload);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_pinned_reminder_compact(app: AppHandle, compact: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pinned-reminder") {
+        let size = if compact {
+            LogicalSize::new(210.0, 58.0)
+        } else {
+            LogicalSize::new(520.0, 260.0)
+        };
+        window.set_size(size).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_pinned_reminder_switching(app: AppHandle, switching: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pinned-reminder") {
+        let height = if switching { 340.0 } else { 260.0 };
+        window
+            .set_size(LogicalSize::new(520.0, height))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn is_reminder_snoozed_for(app: &AppHandle, task_id: &str) -> Result<bool, String> {
+    let connection = database(app)?;
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value_json FROM settings WHERE key = 'reminder_snooze'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let snooze: ReminderSnooze = serde_json::from_str(&value).map_err(|error| error.to_string())?;
+    if snooze.task_id != task_id {
+        return Ok(false);
+    }
+    let until = chrono::DateTime::parse_from_rfc3339(&snooze.until)
+        .map_err(|error| error.to_string())?
+        .with_timezone(&Utc);
+    Ok(until > Utc::now())
+}
+
+#[tauri::command]
+pub fn is_reminder_snoozed(app: AppHandle, task_id: String) -> Result<bool, String> {
+    is_reminder_snoozed_for(&app, &task_id)
+}
+
+#[tauri::command]
+pub fn snooze_pinned_reminder(app: AppHandle, task_id: String, minutes: u32) -> Result<(), String> {
+    let until = (Utc::now() + chrono::Duration::minutes(minutes.clamp(5, 480) as i64)).to_rfc3339();
+    let value = serde_json::to_string(&ReminderSnooze { task_id, until })
+        .map_err(|error| error.to_string())?;
+    let connection = database(&app)?;
+    connection.execute(
+        "INSERT INTO settings (key, value_json, updated_at) VALUES ('reminder_snooze', ?1, ?2) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+        params![value, now()],
+    ).map_err(|error| error.to_string())?;
+    hide_pinned_reminder(app.clone())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn complete_reminder_active(app: AppHandle, task_id: String) -> Result<(), String> {
+    complete_task(app.clone(), task_id)?;
+    let _ = app.emit("tasks-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resume_reminder_task(
+    app: AppHandle,
+    pending_task_id: String,
+    active_task_id: Option<String>,
+    current_disposition: Option<String>,
+    progress_note: Option<String>,
+) -> Result<(), String> {
+    if active_task_id
+        .as_deref()
+        .is_some_and(|id| id != pending_task_id)
+    {
+        if current_disposition.as_deref() == Some("done") {
+            complete_task(
+                app.clone(),
+                active_task_id.expect("active task was checked"),
+            )?;
+            start_task(app.clone(), pending_task_id)?;
+        } else {
+            switch_task(
+                app.clone(),
+                SwitchTaskInput {
+                    next_task_id: pending_task_id,
+                    progress_note,
+                },
+            )?;
+        }
+    } else {
+        start_task(app.clone(), pending_task_id)?;
+    }
+    let _ = app.emit("tasks-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_pinned_reminder(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pinned-reminder") {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn force_show_pinned_reminder(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<PinnedReminderState>();
+    let payload = state.0.lock().map_err(|error| error.to_string())?.clone();
+    let payload = payload
+        .filter(|item| item.pending.is_some())
+        .ok_or("There is no pending task to remind you about.")?;
+    let connection = database(app)?;
+    connection
+        .execute("DELETE FROM settings WHERE key = 'reminder_snooze'", [])
+        .map_err(|error| error.to_string())?;
+    let window = app
+        .get_webview_window("pinned-reminder")
+        .ok_or("Pinned reminder window is not configured.")?;
+    let _ = window.emit("pinned-reminder:update", payload);
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_pinned_reminder(app: AppHandle) -> Result<(), String> {
+    force_show_pinned_reminder(&app)
+}
+
+#[tauri::command]
+pub fn open_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

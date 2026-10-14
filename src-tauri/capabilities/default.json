@@ -2,10 +2,15 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": ["main", "pinned-reminder"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "opener:default",
-    "sql:default"
+    "sql:default",
+    "notification:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "autostart:default"
   ]
 }
