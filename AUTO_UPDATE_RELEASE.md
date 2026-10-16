@@ -28,8 +28,7 @@ npm.cmd run tauri build
 Tạo GitHub Release có tag `v0.1.1` tại repository `GiangPhanNguyenTra/taskflow-management`, rồi upload các file trong `src-tauri\target\release\bundle\nsis\`:
 
 - `*-setup.exe`: gửi cho người cài mới hoặc các tester đang dùng bản cũ.
-- `*.nsis.zip`: gói mà app sẽ tải để tự cập nhật.
-- `*.nsis.zip.sig`: file chứa chữ ký của gói cập nhật.
+- `*-setup.exe.sig`: file chứa chữ ký của installer mà app dùng để tự cập nhật.
 - `latest.json`: manifest app đọc mỗi lần kiểm tra cập nhật.
 
 `latest.json` cho Release `v0.1.1`:
@@ -41,8 +40,8 @@ Tạo GitHub Release có tag `v0.1.1` tại repository `GiangPhanNguyenTra/taskf
   "pub_date": "2026-10-16T10:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/GiangPhanNguyenTra/taskflow-management/releases/download/v0.1.1/TEN_FILE.nsis.zip",
-      "signature": "NOI_DUNG_NGUYEN_VEN_CUA_FILE_NSIS_ZIP_SIG"
+      "url": "https://github.com/GiangPhanNguyenTra/taskflow-management/releases/download/v0.1.1/TEN_FILE-setup.exe",
+      "signature": "NOI_DUNG_NGUYEN_VEN_CUA_FILE_SETUP_EXE_SIG"
     }
   }
 }
@@ -54,6 +53,6 @@ Trong GitHub Release, upload `latest.json` như một asset. Đừng dùng link 
 
 1. Tăng cùng một version trong `package.json`, `src-tauri/tauri.conf.json`, và `src-tauri/Cargo.toml` — ví dụ `0.1.2`.
 2. Build lại với biến `TAURI_SIGNING_PRIVATE_KEY` như trên.
-3. Tạo Release tag `v0.1.2`; upload `*-setup.exe`, `*.nsis.zip`, `*.nsis.zip.sig`, và `latest.json` có version `0.1.2` cùng đúng URL/chữ ký của release đó.
+3. Tạo Release tag `v0.1.2`; upload `*-setup.exe`, `*-setup.exe.sig`, và `latest.json` có version `0.1.2` cùng đúng URL/chữ ký của release đó.
 
 Giữ an toàn private key tại `C:\Users\admin\.tauri\taskflow-updater.key`. Không commit, gửi, hay upload file này.
