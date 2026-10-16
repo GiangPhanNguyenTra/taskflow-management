@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Clock3, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock3, Pencil, Trash2, CalendarClock } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -14,9 +14,14 @@ import {
   listTaskActivity,
   type TaskActivity,
   updateTask,
+  scheduleTaskResume,
 } from "./taskRepository";
 
 const priorities: TaskPriority[] = ["urgent", "high", "medium", "low"];
+const asDateTimeLocal = (value: Date) => {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+};
 const activityLabel: Record<string, string> = {
   created: "Created",
   started: "Started focus",
@@ -56,6 +61,7 @@ export function TaskDetailDialog({
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resumeLocal, setResumeLocal] = useState("");
   const loadActivity = async (taskId: string) => {
     try {
       setActivity(await listTaskActivity(taskId));
@@ -76,6 +82,7 @@ export function TaskDetailDialog({
     setActivityOpen(false);
     setActivityLoaded(false);
     setError(null);
+    setResumeLocal(task.resumeAt ? asDateTimeLocal(new Date(task.resumeAt)) : "");
   }, [task]);
   if (!task) return null;
   const save = async () => {
@@ -109,6 +116,14 @@ export function TaskDetailDialog({
     const nextOpen = !activityOpen;
     setActivityOpen(nextOpen);
     if (nextOpen && !activityLoaded) await loadActivity(task.id);
+  };
+  const saveSchedule = async () => {
+    try {
+      if (resumeLocal && new Date(resumeLocal).getTime() <= Date.now()) throw new Error("Choose a future date and time.");
+      const updated = await scheduleTaskResume(task.id, resumeLocal ? new Date(resumeLocal).toISOString() : null);
+      onTaskUpdated(updated);
+      await onChanged();
+    } catch (reason) { setError(String(reason)); }
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -216,6 +231,20 @@ export function TaskDetailDialog({
                     {task.lastProgressNote ||
                       "No progress note was saved when this task was paused."}
                   </p>
+                </section>
+              )}
+              {task.status === "pending" && (
+                <section className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+                  <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-violet-700"><CalendarClock size={14} /> Resume schedule</p>
+                  <p className="mt-2 text-sm text-violet-900">{task.resumeAt ? `Scheduled for ${new Date(task.resumeAt).toLocaleString()}. Reminders stay quiet until then.` : "Available now — normal pending reminders apply."}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <input type="datetime-local" value={resumeLocal} onChange={(event) => setResumeLocal(event.target.value)} className="h-9 rounded-lg border border-violet-200 bg-white px-2 text-sm" />
+                    <Button size="sm" onClick={() => void saveSchedule()}>{resumeLocal ? "Save schedule" : "Cancel schedule"}</Button>
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <button type="button" onClick={() => setResumeLocal(asDateTimeLocal(new Date(Date.now() + 2 * 60 * 60 * 1000)))} className="text-xs font-bold text-violet-700 hover:underline">This afternoon</button>
+                    <button type="button" onClick={() => setResumeLocal(asDateTimeLocal(new Date(Date.now() + 6 * 60 * 60 * 1000)))} className="text-xs font-bold text-violet-700 hover:underline">This evening</button>
+                  </div>
                 </section>
               )}
               <div className="flex flex-wrap gap-2">

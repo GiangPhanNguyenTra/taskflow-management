@@ -30,8 +30,12 @@ export const createTask = (input: CreateTaskInput) =>
   invoke<Task>("create_task", { input });
 export const startTask = (taskId: string) =>
   invoke<Task>("start_task", { taskId });
-export const switchTask = (nextTaskId: string, progressNote?: string) =>
-  invoke<Task>("switch_task", { input: { nextTaskId, progressNote } });
+export const switchTask = (nextTaskId: string, progressNote?: string, resumeAt?: string | null) =>
+  invoke<Task>("switch_task", { input: { nextTaskId, progressNote, resumeAt } });
+export const scheduleTaskResume = (taskId: string, resumeAt: string | null) =>
+  invoke<Task>("schedule_task_resume", { taskId, resumeAt });
+export const acknowledgeScheduledReminder = (taskId: string) =>
+  invoke<boolean>("acknowledge_scheduled_reminder", { taskId });
 export const completeTask = (taskId: string) =>
   invoke<void>("complete_task", { taskId });
 export const markTaskDone = (taskId: string) =>

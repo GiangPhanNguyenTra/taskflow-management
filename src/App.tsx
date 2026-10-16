@@ -25,6 +25,7 @@ import {
   Play,
   Plus,
   Trash2,
+  Clock3,
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
@@ -38,6 +39,7 @@ import {
 import { TaskDetailDialog } from "./features/tasks/TaskDetailDialog";
 import { BacklogView } from "./features/backlog/BacklogView";
 import { DailyCarryoverDialog } from "./features/daily-carryover/DailyCarryoverDialog";
+import { UpdateDialog } from "./features/updates/UpdateDialog";
 import { HistoryView } from "./features/history/HistoryView";
 import { isReminderSnoozed, updatePinnedReminder } from "./features/reminders/reminderRepository";
 import { SettingsView } from "./features/settings/SettingsView";
@@ -54,6 +56,7 @@ import {
   reorderTasks,
   startTask,
   switchTask,
+  acknowledgeScheduledReminder,
 } from "./features/tasks/taskRepository";
 import { cn } from "./lib/utils";
 import type { Task, TaskPriority } from "./shared/task";
@@ -108,6 +111,7 @@ function SortableTask({
   const [menuOpen, setMenuOpen] = useState(false);
   const cardRef = useRef<HTMLElement | null>(null);
   const statusLabel = task.status === "pending" ? "Pending" : "To do";
+  const scheduled = task.status === "pending" && task.resumeAt && new Date(task.resumeAt) > new Date();
   useEffect(() => {
     if (!menuOpen) return;
     const closeOnOutsideInteraction = (event: MouseEvent | KeyboardEvent) => {
@@ -170,7 +174,9 @@ function SortableTask({
             {task.priority}
           </Badge>
           {task.status === "pending" && (
-            <Badge className="bg-orange-100 text-orange-700">Pending</Badge>
+            <Badge className={scheduled ? "inline-flex items-center gap-1 leading-none bg-violet-100 text-violet-700" : "bg-orange-100 text-orange-700"}>
+              {scheduled ? <><Clock3 size={12} className="shrink-0" aria-hidden="true" /><span>Scheduled · {new Date(task.resumeAt!).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span></> : "Pending"}
+            </Badge>
           )}
         </div>
         <p className="mt-1 truncate text-sm text-slate-400">
@@ -328,6 +334,7 @@ function App() {
     priority: TaskPriority;
   } | null>(null);
   const [note, setNote] = useState("");
+  const [switchResumeAt, setSwitchResumeAt] = useState("");
   const [pendingReorder, setPendingReorder] = useState<Task[] | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [deletingTask, setDeletingTask] = useState<Task | null>(null);
@@ -344,7 +351,8 @@ function App() {
         .sort((a, b) => a.queuePosition - b.queuePosition),
     [tasks],
   );
-  const recommended = active ? undefined : queue[0];
+  const availableQueue = queue.filter((task) => !task.resumeAt || new Date(task.resumeAt) <= new Date());
+  const recommended = active ? undefined : availableQueue[0];
   const refresh = async () => {
     setLoading(true);
     try {
@@ -384,7 +392,8 @@ function App() {
   }, []);
   useEffect(() => {
     if (!appSettings) return;
-    const pending = tasks.find((task) => task.status === "pending");
+    // Scheduled Pending remains in the queue, but is completely quiet until its UTC resume time.
+    const pending = tasks.find((task) => task.status === "pending" && (!task.resumeAt || new Date(task.resumeAt) <= new Date()));
     const summarize = (task: Task | undefined) => task
       ? { id: task.id, title: task.title, detail: task.lastProgressNote || task.description }
       : null;
@@ -398,6 +407,19 @@ function App() {
       return canRemind;
     };
     void syncPinnedReminder();
+
+    const dueScheduled = tasks.find((task) => task.status === "pending" && task.resumeAt && new Date(task.resumeAt) <= new Date() && !task.reminderLastSentAt);
+    if (dueScheduled) {
+      void acknowledgeScheduledReminder(dueScheduled.id).then(async (claimed) => {
+        if (!claimed) return;
+        try {
+          let granted = await isPermissionGranted();
+          if (!granted) granted = (await requestPermission()) === "granted";
+          if (granted) sendNotification({ title: "TaskFlow reminder", body: `“${dueScheduled.title}” is ready to resume. Would you like to continue?` });
+        } catch { /* unavailable in browser preview */ }
+        await refresh();
+      }).catch(() => undefined);
+    }
 
     if (!appSettings.remindersEnabled || !pending) {
       pendingReminderTaskId.current = null;
@@ -579,13 +601,14 @@ function App() {
           plannedDate: today(),
           queuePosition: queue.length,
         });
-        await switchTask(task.id, note);
+        await switchTask(task.id, note, switchResumeAt ? new Date(switchResumeAt).toISOString() : null);
         setSingleTitle("");
         setSingleDescription("");
       } else if (switching) {
-        await switchTask(switching.id, note);
+        await switchTask(switching.id, note, switchResumeAt ? new Date(switchResumeAt).toISOString() : null);
       }
       setNote("");
+      setSwitchResumeAt("");
       setSwitching(null);
       setPendingSingleStart(null);
       await refresh();
@@ -595,6 +618,7 @@ function App() {
   };
   const returnToSingleTaskForm = () => {
     setNote("");
+    setSwitchResumeAt("");
     setSwitching(null);
     setPendingSingleStart(null);
     setSingleAction("queue");
@@ -844,6 +868,7 @@ function App() {
         queueSize={queue.length}
         onChanged={refresh}
       />
+      <UpdateDialog />
       <Dialog open={addOpen} onOpenChange={closeModal}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogTitle className="text-xl font-bold">
@@ -1085,6 +1110,7 @@ function App() {
             setSwitching(null);
             setPendingSingleStart(null);
             setNote("");
+            setSwitchResumeAt("");
           }
         }}
       >
@@ -1102,6 +1128,10 @@ function App() {
             className="mt-5 min-h-28 w-full rounded-xl border border-slate-200 p-3 outline-none focus:ring-2 focus:ring-violet-300"
             placeholder="What have you completed? What is the next step? (optional)"
           />
+          <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50 p-3">
+            <label className="flex items-center gap-2 text-xs font-bold text-violet-800"><Clock3 size={14} /> Resume current task later (optional)</label>
+            <div className="mt-2 flex flex-wrap items-center gap-2"><input type="datetime-local" value={switchResumeAt} onChange={(event) => setSwitchResumeAt(event.target.value)} className="h-9 rounded-lg border border-violet-200 bg-white px-2 text-sm" /><button type="button" onClick={() => setSwitchResumeAt("")} className="text-xs font-bold text-violet-700">Available now</button></div>
+          </div>
           <Button className="mt-4 w-full" onClick={() => void switchTaskNow()}>
             Save context & switch
             <ChevronRight size={17} />

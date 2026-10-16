@@ -20,5 +20,11 @@ pub fn core_schema() -> Vec<Migration> {
             sql: include_str!("../migrations/0003_history_index.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "add scheduled pending resume fields",
+            sql: include_str!("../migrations/0004_scheduled_pending.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

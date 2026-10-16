@@ -17,6 +17,9 @@ pub struct Task {
     pub planned_date: Option<String>,
     pub queue_position: f64,
     pub last_progress_note: Option<String>,
+    pub resume_at: Option<String>,
+    pub reminder_last_sent_at: Option<String>,
+    pub reminder_snoozed_until: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -138,6 +141,7 @@ pub struct CreateTaskInput {
 pub struct SwitchTaskInput {
     pub next_task_id: String,
     pub progress_note: Option<String>,
+    pub resume_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +189,9 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         planned_date: row.get("planned_date")?,
         queue_position: row.get("queue_position")?,
         last_progress_note: row.get("last_progress_note")?,
+        resume_at: row.get("resume_at")?,
+        reminder_last_sent_at: row.get("reminder_last_sent_at")?,
+        reminder_snoozed_until: row.get("reminder_snoozed_until")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         completed_at: row.get("completed_at")?,
@@ -432,6 +439,7 @@ pub fn resume_reminder_task(
                 SwitchTaskInput {
                     next_task_id: pending_task_id,
                     progress_note,
+                    resume_at: None,
                 },
             )?;
         }
@@ -540,7 +548,7 @@ pub fn start_task(app: AppHandle, task_id: String) -> Result<Task, String> {
         "started"
     };
     tx.execute(
-        "UPDATE tasks SET status = 'in_progress', updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'in_progress', resume_at = NULL, reminder_snoozed_until = NULL, updated_at = ?1 WHERE id = ?2",
         params![timestamp, task_id],
     )
     .map_err(|error| error.to_string())?;
@@ -589,14 +597,15 @@ pub fn switch_task(app: AppHandle, input: SwitchTaskInput) -> Result<Task, Strin
     } else {
         None
     };
-    tx.execute("UPDATE tasks SET status = 'pending', last_progress_note = ?1, updated_at = ?2 WHERE id = ?3", params![progress_note, timestamp, current_id]).map_err(|error| error.to_string())?;
+    let resume_at = input.resume_at.filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok());
+    tx.execute("UPDATE tasks SET status = 'pending', last_progress_note = ?1, resume_at = ?2, reminder_last_sent_at = NULL, reminder_snoozed_until = NULL, updated_at = ?3 WHERE id = ?4", params![progress_note, resume_at, timestamp, current_id]).map_err(|error| error.to_string())?;
     let event = if next.status == "pending" {
         "resumed"
     } else {
         "started"
     };
     tx.execute(
-        "UPDATE tasks SET status = 'in_progress', updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'in_progress', resume_at = NULL, reminder_snoozed_until = NULL, updated_at = ?1 WHERE id = ?2",
         params![timestamp, input.next_task_id],
     )
     .map_err(|error| error.to_string())?;
@@ -608,6 +617,32 @@ pub fn switch_task(app: AppHandle, input: SwitchTaskInput) -> Result<Task, Strin
         .ok_or("Task not found.")?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(updated)
+}
+
+#[tauri::command]
+pub fn schedule_task_resume(app: AppHandle, task_id: String, resume_at: Option<String>) -> Result<Task, String> {
+    let timestamp = now();
+    let resume_at = resume_at.filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok());
+    let mut connection = database(&app)?;
+    let tx = connection.transaction().map_err(|error| error.to_string())?;
+    let task = find_task(&tx, &task_id).map_err(|error| error.to_string())?.ok_or("Task not found.")?;
+    if task.status != "pending" { return Err("Only Pending tasks can be scheduled to resume.".into()); }
+    tx.execute("UPDATE tasks SET resume_at = ?1, reminder_last_sent_at = NULL, reminder_snoozed_until = NULL, updated_at = ?2 WHERE id = ?3", params![resume_at, timestamp, task_id]).map_err(|error| error.to_string())?;
+    add_event(&tx, &task_id, if resume_at.is_some() { "resume_scheduled" } else { "resume_schedule_cleared" }, &timestamp, "{}").map_err(|error| error.to_string())?;
+    let updated = find_task(&tx, &task_id).map_err(|error| error.to_string())?.ok_or("Task not found.")?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn acknowledge_scheduled_reminder(app: AppHandle, task_id: String) -> Result<bool, String> {
+    let timestamp = now();
+    let connection = database(&app)?;
+    let changed = connection.execute(
+        "UPDATE tasks SET reminder_last_sent_at = ?1, updated_at = ?1 WHERE id = ?2 AND status = 'pending' AND resume_at IS NOT NULL AND resume_at <= ?1 AND reminder_last_sent_at IS NULL",
+        params![timestamp, task_id],
+    ).map_err(|error| error.to_string())?;
+    Ok(changed == 1)
 }
 
 #[tauri::command]
@@ -624,7 +659,7 @@ pub fn complete_task(app: AppHandle, task_id: String) -> Result<(), String> {
         return Err("Only the active task can be completed.".into());
     }
     tx.execute(
-        "UPDATE tasks SET status = 'done', completed_at = ?1, updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'done', completed_at = ?1, resume_at = NULL, reminder_snoozed_until = NULL, updated_at = ?1 WHERE id = ?2",
         params![timestamp, task_id],
     )
     .map_err(|error| error.to_string())?;
@@ -647,7 +682,7 @@ pub fn mark_task_done(app: AppHandle, task_id: String) -> Result<(), String> {
         return Err("This task is already done.".into());
     }
     tx.execute(
-        "UPDATE tasks SET status = 'done', completed_at = ?1, updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET status = 'done', completed_at = ?1, resume_at = NULL, reminder_snoozed_until = NULL, updated_at = ?1 WHERE id = ?2",
         params![timestamp, task_id],
     )
     .map_err(|error| error.to_string())?;
@@ -834,7 +869,7 @@ pub fn move_task_to_backlog(app: AppHandle, task_id: String) -> Result<(), Strin
         return Err("Switch or complete the active task before moving it to backlog.".into());
     }
     tx.execute(
-        "UPDATE tasks SET location = 'backlog', planned_date = NULL, updated_at = ?1 WHERE id = ?2",
+        "UPDATE tasks SET location = 'backlog', planned_date = NULL, resume_at = NULL, reminder_snoozed_until = NULL, updated_at = ?1 WHERE id = ?2",
         params![timestamp, task_id],
     )
     .map_err(|error| error.to_string())?;

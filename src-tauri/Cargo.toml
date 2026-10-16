@@ -1,6 +1,6 @@
 [package]
 name = "taskflow-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
@@ -29,6 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 tauri-plugin-notification = "2.6.0"
 tauri-plugin-global-shortcut = "2.4.1"
 tauri-plugin-autostart = "2.7.0"
+tauri-plugin-updater = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

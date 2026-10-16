@@ -9,6 +9,7 @@
     "opener:default",
     "sql:default",
     "notification:default",
+    "updater:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "autostart:default"

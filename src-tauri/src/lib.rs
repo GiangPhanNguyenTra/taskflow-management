@@ -19,6 +19,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -84,6 +85,8 @@ pub fn run() {
             tasks::open_main_window,
             tasks::start_task,
             tasks::switch_task,
+            tasks::schedule_task_resume,
+            tasks::acknowledge_scheduled_reminder,
             tasks::complete_task,
             tasks::mark_task_done,
             tasks::list_backlog_tasks,

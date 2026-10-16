@@ -6,6 +6,7 @@ import {
   Circle,
   ClipboardCheck,
   Clock3,
+  ChevronDown,
   Info,
   ListTodo,
   LoaderCircle,
@@ -26,9 +27,11 @@ import {
   markTaskDone,
   moveTaskToBacklog,
   moveTaskToToday,
+  scheduleTaskResume,
 } from "../tasks/taskRepository";
 
 type CarryoverAction = "today" | "backlog" | "done" | "delete";
+type CarryoverDecision = { action: CarryoverAction; resumeAt?: string };
 type Props = {
   date: string;
   queueSize: number;
@@ -50,6 +53,7 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<CarryoverAction>("today");
+  const [decisions, setDecisions] = useState<Record<string, CarryoverDecision>>({});
   const summary = useMemo(
     () => ({
       pending: tasks.filter((task) => task.status === "pending").length,
@@ -64,6 +68,7 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
       const items = await listCarryoverTasks(date);
       setTasks(items);
       setSelectedIds(new Set(items.map((task) => task.id)));
+      setDecisions({});
       setOpen(items.length > 0);
       setError(null);
     } catch (reason) {
@@ -77,14 +82,17 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
   }, [date]);
   const applyAction = async (
     task: Task,
-    action: CarryoverAction,
+    decision: CarryoverDecision,
     position: number,
   ) => {
+    const { action, resumeAt } = decision;
     if (action === "today")
       await moveTaskToToday(task.id, date, queueSize + position);
     else if (action === "backlog") await moveTaskToBacklog(task.id);
     else if (action === "done") await markTaskDone(task.id);
     else await deleteTask(task.id);
+    if (action === "today" && resumeAt)
+      await scheduleTaskResume(task.id, resumeAt);
   };
   const afterUpdate = async (processed: Set<string>) => {
     const remaining = tasks.filter((task) => !processed.has(task.id));
@@ -95,18 +103,8 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
     if (!remaining.length) setOpen(false);
     await onChanged();
   };
-  const applyOne = async (task: Task, action: CarryoverAction) => {
-    setApplying(true);
-    setError(null);
-    try {
-      await applyAction(task, action, tasks.indexOf(task));
-      await afterUpdate(new Set([task.id]));
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setApplying(false);
-    }
-  };
+  const stage = (taskId: string, decision: CarryoverDecision) =>
+    setDecisions((current) => ({ ...current, [taskId]: decision }));
   const applySelected = async () => {
     const selected = tasks.filter((task) => selectedIds.has(task.id));
     if (!selected.length) return;
@@ -115,7 +113,7 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
     const processed = new Set<string>();
     try {
       for (const [index, task] of selected.entries()) {
-        await applyAction(task, bulkAction, index);
+        await applyAction(task, decisions[task.id] ?? { action: bulkAction }, index);
         processed.add(task.id);
       }
       await afterUpdate(processed);
@@ -236,7 +234,8 @@ export function DailyCarryoverDialog({ date, queueSize, onChanged }: Props) {
                 selected={selectedIds.has(task.id)}
                 disabled={applying}
                 onToggle={() => toggleTask(task.id)}
-                onApply={applyOne}
+                decision={decisions[task.id]}
+                onStage={stage}
               />
             ))}
           </div>
@@ -306,14 +305,32 @@ function TaskCard({
   selected,
   disabled,
   onToggle,
-  onApply,
+  decision,
+  onStage,
 }: {
   task: Task;
   selected: boolean;
   disabled: boolean;
   onToggle: () => void;
-  onApply: (task: Task, action: CarryoverAction) => Promise<void>;
+  decision?: CarryoverDecision;
+  onStage: (taskId: string, decision: CarryoverDecision) => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pickTimeOpen, setPickTimeOpen] = useState(false);
+  const [resumeAt, setResumeAt] = useState("");
+  const keepScheduled = (when: Date) => {
+    onStage(task.id, { action: "today", resumeAt: when.toISOString() });
+  };
+  const chooseTime = (hours: number) => {
+    const when = new Date();
+    when.setHours(hours, 0, 0, 0);
+    if (when <= new Date()) {
+      setPickTimeOpen(true);
+      return;
+    }
+    setMenuOpen(false);
+    keepScheduled(when);
+  };
   return (
     <article
       className={`rounded-xl border bg-white p-3.5 shadow-sm transition ${selected ? "border-violet-300 ring-1 ring-violet-100" : "border-slate-100"}`}
@@ -356,37 +373,52 @@ function TaskCard({
             )}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <SmallAction
-              icon={<CalendarDays size={13} />}
-              label="Keep for today"
-              primary
-              onClick={() => void onApply(task, "today")}
-              disabled={disabled}
-            />
+            <div className="relative inline-flex overflow-visible rounded-lg shadow-sm">
+              <button type="button" disabled={disabled} onClick={() => onStage(task.id, { action: "today" })} className="inline-flex h-7 items-center gap-1 rounded-l-lg bg-violet-600 px-2 text-[11px] font-bold text-white transition hover:bg-violet-700 disabled:opacity-50"><CalendarDays size={13} />Keep for today</button>
+              <button type="button" aria-label="Choose when to resume" disabled={disabled} onClick={() => setMenuOpen((open) => !open)} className="grid h-7 w-7 place-items-center rounded-r-lg border-l border-violet-400 bg-violet-600 text-white transition hover:bg-violet-700 disabled:opacity-50"><ChevronDown size={14} /></button>
+              {menuOpen && (
+                <div className="absolute left-0 top-8 z-30 w-52 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <MenuAction icon={<Circle size={13} />} label="Available now" description="Keep ready to resume" onClick={() => { setMenuOpen(false); onStage(task.id, { action: "today" }); }} />
+                  <MenuAction icon={<Clock3 size={13} />} label="This afternoon" description="Resume at 2:00 PM" onClick={() => chooseTime(14)} />
+                  <MenuAction icon={<Clock3 size={13} />} label="Later today" description="Resume at 6:00 PM" onClick={() => chooseTime(18)} />
+                  <MenuAction icon={<CalendarDays size={13} />} label="Pick date & time…" onClick={() => setPickTimeOpen(true)} />
+                  {pickTimeOpen && <div className="mt-1 border-t border-slate-100 p-1.5"><input aria-label="Resume date and time" type="datetime-local" value={resumeAt} onChange={(event) => setResumeAt(event.target.value)} className="h-8 w-full rounded-lg border border-slate-200 px-2 text-[11px]" /><button type="button" disabled={!resumeAt} onClick={() => { const when = new Date(resumeAt); if (when > new Date()) { setMenuOpen(false); keepScheduled(when); } }} className="mt-1.5 w-full rounded-lg bg-violet-600 py-1.5 text-[11px] font-bold text-white disabled:opacity-40">Keep for later</button></div>}
+                </div>
+              )}
+            </div>
             <SmallAction
               icon={<Archive size={13} />}
               label="Backlog"
-              onClick={() => void onApply(task, "backlog")}
+              onClick={() => onStage(task.id, { action: "backlog" })}
               disabled={disabled}
             />
             <SmallAction
               icon={<CheckCircle2 size={13} />}
               label="Done"
-              onClick={() => void onApply(task, "done")}
+              onClick={() => onStage(task.id, { action: "done" })}
               disabled={disabled}
             />
             <SmallAction
               icon={<Trash2 size={13} />}
               label="Delete"
               danger
-              onClick={() => void onApply(task, "delete")}
+              onClick={() => onStage(task.id, { action: "delete" })}
               disabled={disabled}
             />
           </div>
+          {decision && (
+            <p className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-bold ${decision.action === "today" ? "bg-violet-50 text-violet-700" : decision.action === "delete" ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600"}`}>
+              {decision.action === "today" && decision.resumeAt ? <><Clock3 size={12} /> Resume at {new Date(decision.resumeAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</> : decision.action === "today" ? "Available now" : decision.action === "backlog" ? "Move to backlog" : decision.action === "done" ? "Mark as done" : "Delete task"}
+            </p>
+          )}
         </div>
       </div>
     </article>
   );
+}
+
+function MenuAction({ icon, label, description, onClick }: { icon: React.ReactNode; label: string; description?: string; onClick: () => void }) {
+  return <button type="button" onClick={onClick} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-violet-50"><span className="text-violet-600">{icon}</span><span><span className="block text-xs font-bold text-slate-700">{label}</span>{description && <span className="block text-[10px] text-slate-400">{description}</span>}</span></button>;
 }
 
 function SmallAction({
